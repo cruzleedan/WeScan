@@ -9,12 +9,16 @@
 
 import AVFoundation
 import UIKit
+import Photos
 
 /// The `ScannerViewController` offers an interface to give feedback to the user regarding quadrilaterals that are detected. It also gives the user the opportunity to capture an image with a detected rectangle.
 public final class ScannerViewController: UIViewController {
 
     private var captureSessionManager: CaptureSessionManager?
     private let videoPreviewLayer = AVCaptureVideoPreviewLayer()
+    
+    private var cancelAction: (() -> Void)? = nil
+    private var captureAction: ((_ image: UIImage, _ quad: Quadrilateral?) -> Void)? = nil
 
     /// The view that shows the focus rectangle (when the user taps to focus, similar to the Camera app)
     private var focusRectangle: FocusRectangleView!
@@ -34,6 +38,22 @@ public final class ScannerViewController: UIViewController {
         button.addTarget(self, action: #selector(captureImage(_:)), for: .touchUpInside)
         return button
     }()
+    
+    private lazy var galleryButton: UIButton = {
+        let galleryButton = UIButton(type: .system)
+        galleryButton.translatesAutoresizingMaskIntoConstraints = false
+        galleryButton.layer.cornerRadius = 27.5 // Half of the height and width for a circular shape
+        galleryButton.layer.masksToBounds = true
+        galleryButton.layer.borderWidth = 2
+        galleryButton.layer.borderColor = UIColor.white.cgColor
+        galleryButton.backgroundColor = .clear
+        galleryButton.imageView?.contentMode = .scaleAspectFill
+        galleryButton.addTarget(self, action: #selector(galleryButtonTapped), for: .touchUpInside)
+        
+        galleryButton.setImage(UIImage(systemName: "photo.stack"), for: .normal)
+        
+        return galleryButton
+    }()
 
     private lazy var cancelButton: UIButton = {
         let button = UIButton()
@@ -43,29 +63,65 @@ public final class ScannerViewController: UIViewController {
         return button
     }()
 
-    private lazy var autoScanButton: UIBarButtonItem = {
+    private lazy var autoScanButton: UIButton = {
         let title = NSLocalizedString("wescan.scanning.auto", tableName: nil, bundle: Bundle(for: ScannerViewController.self), value: "Auto", comment: "The auto button state")
-        let button = UIBarButtonItem(title: title, style: .plain, target: self, action: #selector(toggleAutoScan))
-        button.tintColor = .white
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        button.addTarget(self, action: #selector(toggleAutoScan), for: .touchUpInside)
 
         return button
     }()
 
-    private lazy var flashButton: UIBarButtonItem = {
+    private lazy var flashButton: UIButton = {
         let image = UIImage(systemName: "bolt.fill", named: "flash", in: Bundle(for: ScannerViewController.self), compatibleWith: nil)
-        let button = UIBarButtonItem(image: image, style: .plain, target: self, action: #selector(toggleFlash))
+        let button = UIButton(type: .system)
+        button.setImage(image, for: .normal)
         button.tintColor = .white
 
+        button.frame.size = CGSize(width: 25, height: 25)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 25).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 25).isActive = true
+
+        if UIImagePickerController.isFlashAvailable(for: .rear) == false {
+            let flashOffImage = UIImage(systemName: "bolt.slash.fill", named: "flashUnavailable", in: Bundle(for: ScannerViewController.self), compatibleWith: nil)
+            button.setImage(flashOffImage, for: .normal)
+            button.tintColor = UIColor.lightGray
+        }
+        button.addTarget(self, action: #selector(toggleFlash), for: .touchUpInside)
         return button
     }()
-
-    private lazy var activityIndicator: UIActivityIndicatorView = {
-        let activityIndicator = UIActivityIndicatorView(style: .gray)
-        activityIndicator.hidesWhenStopped = true
-        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
-        return activityIndicator
+    
+    private lazy var headerContainer: UIStackView = {
+        let toolbarStackView = UIStackView()
+        toolbarStackView.axis = .horizontal
+        toolbarStackView.spacing = 20
+        toolbarStackView.alignment = .trailing
+        toolbarStackView.translatesAutoresizingMaskIntoConstraints = false
+        
+        return toolbarStackView
+    }()
+    
+    private lazy var headerToolbar: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = .black.withAlphaComponent(0.5)//.systemBackground
+        
+        return view
     }()
 
+    // MARK: - Initializers
+    
+    init(cancelAction: (() -> Void)? = nil, captureAction: ((_ image: UIImage, _ quad: Quadrilateral?) -> Void)? = nil) {
+        self.cancelAction = cancelAction
+        self.captureAction = captureAction
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
     // MARK: - Life Cycle
 
     override public func viewDidLoad() {
@@ -77,12 +133,17 @@ public final class ScannerViewController: UIViewController {
         setupViews()
         setupNavigationBar()
         setupConstraints()
+        setupGalleryButton()
 
         captureSessionManager = CaptureSessionManager(videoPreviewLayer: videoPreviewLayer, delegate: self)
 
-        originalBarStyle = navigationController?.navigationBar.barStyle
-
         NotificationCenter.default.addObserver(self, selector: #selector(subjectAreaDidChange), name: Notification.Name.AVCaptureDeviceSubjectAreaDidChange, object: nil)
+        
+        // Simulate some work with a delay
+        showSpinner()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            self.hideSpinner()
+        }
     }
 
     override public func viewWillAppear(_ animated: Bool) {
@@ -94,7 +155,8 @@ public final class ScannerViewController: UIViewController {
         captureSessionManager?.start()
         UIApplication.shared.isIdleTimerDisabled = true
 
-        navigationController?.navigationBar.barStyle = .blackTranslucent
+        navigationController?.setToolbarHidden(true, animated: false)
+        navigationController?.setNavigationBarHidden(true, animated: false)
     }
 
     override public func viewDidLayoutSubviews() {
@@ -124,26 +186,40 @@ public final class ScannerViewController: UIViewController {
         quadView.translatesAutoresizingMaskIntoConstraints = false
         quadView.editable = false
         view.addSubview(quadView)
-        view.addSubview(cancelButton)
         view.addSubview(shutterButton)
-        view.addSubview(activityIndicator)
+        view.addSubview(galleryButton)
     }
-
+    
     private func setupNavigationBar() {
-        navigationItem.setLeftBarButton(flashButton, animated: false)
-        navigationItem.setRightBarButton(autoScanButton, animated: false)
-
-        if UIImagePickerController.isFlashAvailable(for: .rear) == false {
-            let flashOffImage = UIImage(systemName: "bolt.slash.fill", named: "flashUnavailable", in: Bundle(for: ScannerViewController.self), compatibleWith: nil)
-            flashButton.image = flashOffImage
-            flashButton.tintColor = UIColor.lightGray
-        }
+        let flexibleSpacer = UIView()
+        flexibleSpacer.translatesAutoresizingMaskIntoConstraints = false
+        headerContainer.addArrangedSubview(cancelButton)
+        headerContainer.addArrangedSubview(flexibleSpacer)
+        headerContainer.addArrangedSubview(flashButton)
+        headerContainer.addArrangedSubview(autoScanButton)
+        
+        view.addSubview(headerToolbar)
+        headerToolbar.addSubview(headerContainer)
+        
+        NSLayoutConstraint.activate([
+            headerToolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headerToolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            headerToolbar.topAnchor.constraint(equalTo: view.topAnchor),
+            headerToolbar.heightAnchor.constraint(equalToConstant: 100)
+        ])
+        
+        NSLayoutConstraint.activate([
+            headerContainer.leadingAnchor.constraint(equalTo: headerToolbar.leadingAnchor, constant: 10),
+            headerContainer.trailingAnchor.constraint(equalTo: headerToolbar.trailingAnchor, constant: -10),
+            headerContainer.bottomAnchor.constraint(equalTo: headerToolbar.bottomAnchor)
+        ])
     }
 
     private func setupConstraints() {
         var quadViewConstraints = [NSLayoutConstraint]()
         var cancelButtonConstraints = [NSLayoutConstraint]()
         var shutterButtonConstraints = [NSLayoutConstraint]()
+        var galleryButtonConstraints = [NSLayoutConstraint]()
         var activityIndicatorConstraints = [NSLayoutConstraint]()
 
         quadViewConstraints = [
@@ -158,31 +234,65 @@ public final class ScannerViewController: UIViewController {
             shutterButton.widthAnchor.constraint(equalToConstant: 65.0),
             shutterButton.heightAnchor.constraint(equalToConstant: 65.0)
         ]
-
-        activityIndicatorConstraints = [
-            activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            activityIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        
+        galleryButtonConstraints = [
+            galleryButton.centerXAnchor.constraint(equalTo: view.centerXAnchor, constant: -(view.frame.width / 4) - 32.5 + (27.5/2)),
+            galleryButton.widthAnchor.constraint(equalToConstant: 55),
+            galleryButton.heightAnchor.constraint(equalToConstant: 55),
+            view.safeAreaLayoutGuide.bottomAnchor.constraint(equalTo: galleryButton.bottomAnchor, constant: 10)
         ]
 
-        if #available(iOS 11.0, *) {
-            cancelButtonConstraints = [
-                cancelButton.leftAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leftAnchor, constant: 24.0),
-                view.safeAreaLayoutGuide.bottomAnchor.constraint(equalTo: cancelButton.bottomAnchor, constant: (65.0 / 2) - 10.0)
-            ]
 
+        if #available(iOS 11.0, *) {
             let shutterButtonBottomConstraint = view.safeAreaLayoutGuide.bottomAnchor.constraint(equalTo: shutterButton.bottomAnchor, constant: 8.0)
             shutterButtonConstraints.append(shutterButtonBottomConstraint)
         } else {
-            cancelButtonConstraints = [
-                cancelButton.leftAnchor.constraint(equalTo: view.leftAnchor, constant: 24.0),
-                view.bottomAnchor.constraint(equalTo: cancelButton.bottomAnchor, constant: (65.0 / 2) - 10.0)
-            ]
-
             let shutterButtonBottomConstraint = view.bottomAnchor.constraint(equalTo: shutterButton.bottomAnchor, constant: 8.0)
             shutterButtonConstraints.append(shutterButtonBottomConstraint)
         }
 
-        NSLayoutConstraint.activate(quadViewConstraints + cancelButtonConstraints + shutterButtonConstraints + activityIndicatorConstraints)
+        NSLayoutConstraint.activate(quadViewConstraints + cancelButtonConstraints + shutterButtonConstraints + galleryButtonConstraints)
+    }
+    
+    func setupGalleryButton() {
+        NSLog("fetchLatestPhoto")
+        
+        // Ensure Photos library access is authorized
+        PHPhotoLibrary.requestAuthorization { status in
+            guard status == .authorized else { return }
+            
+            // Fetch the latest two photos
+            let fetchOptions = PHFetchOptions()
+            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            fetchOptions.fetchLimit = 2
+            
+            let fetchResult: PHFetchResult = PHAsset.fetchAssets(with: PHAssetMediaType.image, options: fetchOptions)
+            
+            NSLog("Photos count \(fetchResult.count)")
+            guard fetchResult.count >= 2 else { return }
+            
+            // Request the second latest photo
+            let requestOptions = PHImageRequestOptions()
+            requestOptions.isSynchronous = false
+            requestOptions.deliveryMode = .highQualityFormat
+            
+            let imageIndex = 1
+            let asset = fetchResult.object(at: imageIndex)
+            let targetSize = CGSize(width: 55, height: 55)
+            
+            PHImageManager.default().requestImage(
+                for: asset,
+                targetSize: targetSize,
+                contentMode: .aspectFill,
+                options: requestOptions) { [weak self] (image, _) in
+                    guard let self = self, let image = image else { return }
+                    
+                    NSLog("Will set gallery button image")
+                    DispatchQueue.main.async {
+                        self.galleryButton.setImage(image.withRenderingMode(.alwaysOriginal), for: .normal)
+                    }
+                }
+        }
     }
 
     // MARK: - Tap to Focus
@@ -236,10 +346,10 @@ public final class ScannerViewController: UIViewController {
     @objc private func toggleAutoScan() {
         if CaptureSession.current.isAutoScanEnabled {
             CaptureSession.current.isAutoScanEnabled = false
-            autoScanButton.title = NSLocalizedString("wescan.scanning.manual", tableName: nil, bundle: Bundle(for: ScannerViewController.self), value: "Manual", comment: "The manual button state")
+            autoScanButton.setTitle(NSLocalizedString("wescan.scanning.manual", tableName: nil, bundle: Bundle(for: ScannerViewController.self), value: "Manual", comment: "The manual button state"), for: .normal)
         } else {
             CaptureSession.current.isAutoScanEnabled = true
-            autoScanButton.title = NSLocalizedString("wescan.scanning.auto", tableName: nil, bundle: Bundle(for: ScannerViewController.self), value: "Auto", comment: "The auto button state")
+            autoScanButton.setTitle(NSLocalizedString("wescan.scanning.auto", tableName: nil, bundle: Bundle(for: ScannerViewController.self), value: "Auto", comment: "The auto button state"), for: .normal)
         }
     }
 
@@ -252,22 +362,41 @@ public final class ScannerViewController: UIViewController {
         switch state {
         case .on:
             flashEnabled = true
-            flashButton.image = flashImage
+            flashButton.setImage(flashImage, for: .normal)
             flashButton.tintColor = .yellow
         case .off:
             flashEnabled = false
-            flashButton.image = flashImage
+            flashButton.setImage(flashImage, for: .normal)
             flashButton.tintColor = .white
         case .unknown, .unavailable:
             flashEnabled = false
-            flashButton.image = flashOffImage
+            flashButton.setImage(flashOffImage, for: .normal)
             flashButton.tintColor = UIColor.lightGray
         }
     }
 
     @objc private func cancelImageScannerController() {
-        guard let imageScannerController = navigationController as? ImageScannerController else { return }
-        imageScannerController.imageScannerDelegate?.imageScannerControllerDidCancel(imageScannerController)
+        if let cancelAction = cancelAction {
+            cancelAction()
+        } else {
+            guard let imageScannerController = navigationController as? ImageScannerController else { return }
+            imageScannerController.imageScannerDelegate?.imageScannerControllerDidCancel(imageScannerController)
+        }
+    }
+    
+    @objc func galleryButtonTapped() {
+        showSpinner()
+        // Use a delay to ensure the spinner is rendered before presenting the image picker
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self = self else { return }
+            let imagePicker = UIImagePickerController()
+            imagePicker.delegate = self
+            imagePicker.sourceType = .photoLibrary
+            self.present(imagePicker, animated: true) {
+                self.hideSpinner()
+                self.captureSessionManager?.stop()
+            }
+        }
     }
 
 }
@@ -275,7 +404,7 @@ public final class ScannerViewController: UIViewController {
 extension ScannerViewController: RectangleDetectionDelegateProtocol {
     func captureSessionManager(_ captureSessionManager: CaptureSessionManager, didFailWithError error: Error) {
 
-        activityIndicator.stopAnimating()
+        hideSpinner()
         shutterButton.isUserInteractionEnabled = true
 
         guard let imageScannerController = navigationController as? ImageScannerController else { return }
@@ -283,16 +412,22 @@ extension ScannerViewController: RectangleDetectionDelegateProtocol {
     }
 
     func didStartCapturingPicture(for captureSessionManager: CaptureSessionManager) {
-        activityIndicator.startAnimating()
+        showSpinner()
         captureSessionManager.stop()
         shutterButton.isUserInteractionEnabled = false
     }
 
     func captureSessionManager(_ captureSessionManager: CaptureSessionManager, didCapturePicture picture: UIImage, withQuad quad: Quadrilateral?) {
-        activityIndicator.stopAnimating()
+        hideSpinner()
 
-        let editVC = EditScanViewController(image: picture, quad: quad)
-        navigationController?.pushViewController(editVC, animated: false)
+        //let editVC = EditScanViewController(image: picture, quad: quad)
+        //navigationController?.pushViewController(editVC, animated: false)
+        if let captureAction = captureAction {
+            captureAction(picture, quad)
+        } else {
+            let reviewViewController = EditorViewController(image: picture, quad: quad)
+            navigationController?.pushViewController(reviewViewController, animated: true)
+        }
 
         shutterButton.isUserInteractionEnabled = true
     }
@@ -320,6 +455,54 @@ extension ScannerViewController: RectangleDetectionDelegateProtocol {
         let transformedQuad = quad.applyTransforms(transforms)
 
         quadView.drawQuadrilateral(quad: transformedQuad, animated: true)
+    }
+
+}
+
+extension ScannerViewController: ImageScannerControllerDelegate {
+    public func imageScannerController(_ scanner: ImageScannerController, didFailWithError error: Error) {
+        assertionFailure("Error occurred: \(error)")
+    }
+
+    public func imageScannerController(_ scanner: ImageScannerController, didFinishScanningWithResults results: ImageScannerResults) {
+        scanner.dismiss(animated: true, completion: nil)
+    }
+
+    public func imageScannerControllerDidCancel(_ scanner: ImageScannerController) {
+        scanner.dismiss(animated: true, completion: nil)
+    }
+
+}
+
+
+extension ScannerViewController: UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+    public func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+        picker.dismiss(animated: true)
+        self.captureSessionManager?.start()
+    }
+
+    public func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+        picker.dismiss(animated: true)
+        
+        guard let image = info[.originalImage] as? UIImage else { return }
+        
+        guard let image = rotateImage(image: image) as? UIImage else { return }
+        
+        let editViewController = EditorViewController(image: image, rotateImage: false)
+        navigationController?.pushViewController(editViewController, animated: true)
+    }
+    
+    private func rotateImage(image: UIImage) -> UIImage? {
+        if image.imageOrientation == UIImage.Orientation.up {
+            NSLog("image is already upright")
+            return image /// already upright, no need for changes
+        }
+        NSLog("image will be rotated")
+        UIGraphicsBeginImageContext(image.size)
+        image.draw(in: CGRect(origin: CGPoint.zero, size: image.size))
+        let copy = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return copy
     }
 
 }

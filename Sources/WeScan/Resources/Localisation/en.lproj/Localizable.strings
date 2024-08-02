@@ -19,3 +19,6 @@
 "wescan.scanning.cancel" = "Cancel";
 "wescan.scanning.auto" = "Auto";
 "wescan.scanning.manual" = "Manual";
+
+"wescan.crop.title" = "Crop";
+"wescan.crop.button.done" = "Done";
