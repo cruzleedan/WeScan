@@ -10,6 +10,26 @@ import UIKit
 
 /// The `CropScanViewController` offers an interface for the user to edit the detected quadrilateral.
 final class CropScanViewController: UIViewController {
+    weak var delegate: CropScanViewControllerDelegate?
+    private var rotationAngle = Measurement<UnitAngle>(value: 0.0, unit: .degrees)
+    
+    private lazy var linearGauge: LinearGauge = {
+        let uiControl = LinearGauge()
+        uiControl.addTarget(self, action: #selector(gaugeValueChanged(_:)), for: .valueChanged)
+        return uiControl
+    }()
+    
+    private lazy var imageContainer: UIView = {
+        let container = UIView()
+        container.contentMode = .scaleAspectFill
+        container.layer.borderColor = UIColor.red.cgColor
+        container.layer.borderWidth = 2.0
+        container.translatesAutoresizingMaskIntoConstraints = false
+        
+        container.layer.cornerRadius = 50
+        container.clipsToBounds = true
+        return container
+    }()
     
     private lazy var imageView: UIImageView = {
         let imageView = UIImageView()
@@ -69,15 +89,7 @@ final class CropScanViewController: UIViewController {
     // MARK: - Life Cycle
 
     init(image: UIImage, quad: Quadrilateral?, rotateImage: Bool = false) {
-        //self.image = rotateImage ? image.applyingPortraitOrientation() : image
-        
-    
-        let imageMat = ocv.loadImage(image)
-        let deskewedImageMat = ocv.deskewImage(imageMat)
-        let deskewedUIImage = UIImage(mat: deskewedImageMat)
-
-        self.image = deskewedUIImage!
-        
+        self.image = rotateImage ? image.applyingPortraitOrientation() : image
         self.quad = quad ?? CropScanViewController.defaultQuad(forImage: image)
         super.init(nibName: nil, bundle: nil)
     }
@@ -88,9 +100,7 @@ final class CropScanViewController: UIViewController {
 
     override public func viewDidLoad() {
         super.viewDidLoad()
-
         setupViews()
-        setupConstraints()
         title = NSLocalizedString("wescan.crop.title",
                                   tableName: nil,
                                   bundle: Bundle(for: EditScanViewController.self),
@@ -103,16 +113,20 @@ final class CropScanViewController: UIViewController {
         } else {
             navigationItem.leftBarButtonItem = nil
         }
-
+        self.navigationController?.interactivePopGestureRecognizer?.isEnabled = false
+        
         zoomGestureController = ZoomGestureController(image: image, quadView: quadView)
 
         let touchDown = UILongPressGestureRecognizer(target: zoomGestureController, action: #selector(zoomGestureController.handle(pan:)))
         touchDown.minimumPressDuration = 0
-        view.addGestureRecognizer(touchDown)
+        imageContainer.addGestureRecognizer(touchDown)
     }
 
     override public func viewDidLayoutSubviews() {
+        NSLog("viewDidLayoutSubviews")
         super.viewDidLayoutSubviews()
+        imageContainer.layoutIfNeeded() // Force the layout to update for the quadrilateral to calculate width and height properly
+        
         adjustQuadViewConstraints()
         displayQuad()
     }
@@ -128,29 +142,57 @@ final class CropScanViewController: UIViewController {
     // MARK: - Setups
 
     private func setupViews() {
-        view.addSubview(imageView)
-        view.addSubview(quadView)
+        NSLog("setupViews")
+        setupImageContainer()
+        setupLinearGauge()
     }
-
-    private func setupConstraints() {
-        let imageViewConstraints = [
-            imageView.topAnchor.constraint(equalTo: view.topAnchor),
-            imageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            view.bottomAnchor.constraint(equalTo: imageView.bottomAnchor),
-            view.leadingAnchor.constraint(equalTo: imageView.leadingAnchor)
-        ]
-
-        quadViewWidthConstraint = quadView.widthAnchor.constraint(equalToConstant: 0.0)
-        quadViewHeightConstraint = quadView.heightAnchor.constraint(equalToConstant: 0.0)
-
-        let quadViewConstraints = [
-            quadView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            quadView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+    
+    private func setupImageContainer() {
+        view.addSubview(imageContainer)
+        // Constrain the UIView to the safe area
+        NSLayoutConstraint.activate([
+            imageContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            imageContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            imageContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            imageContainer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -100)
+        ])
+        
+        imageContainer.addSubview(imageView)
+        imageContainer.addSubview(quadView)
+        
+        // Constrain the UIImageView to fill the container UIView
+        quadViewWidthConstraint = quadView.widthAnchor.constraint(equalToConstant: 0)
+        quadViewHeightConstraint = quadView.heightAnchor.constraint(equalToConstant: 0)
+        
+        NSLayoutConstraint.activate([
+            imageView.topAnchor.constraint(equalTo: imageContainer.topAnchor),
+            imageView.leadingAnchor.constraint(equalTo: imageContainer.leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: imageContainer.trailingAnchor),
+            imageView.bottomAnchor.constraint(equalTo: imageContainer.bottomAnchor),
+            
+            quadView.centerXAnchor.constraint(equalTo: imageView.centerXAnchor),
+            quadView.centerYAnchor.constraint(equalTo: imageView.centerYAnchor),
             quadViewWidthConstraint,
             quadViewHeightConstraint
-        ]
-
-        NSLayoutConstraint.activate(quadViewConstraints + imageViewConstraints)
+        ])
+    }
+    
+    private func setupLinearGauge() {
+        // Setup linear guage
+        linearGauge.minValue = -180
+        linearGauge.maxValue = 180
+        linearGauge.majorTickInterval = 30
+        linearGauge.minorTickInterval = 10
+        linearGauge.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(linearGauge)
+        
+        NSLayoutConstraint.activate([
+            linearGauge.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            linearGauge.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -60),
+            linearGauge.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            linearGauge.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            linearGauge.heightAnchor.constraint(equalToConstant: 60)
+        ])
     }
 
     // MARK: - Actions
@@ -189,49 +231,34 @@ final class CropScanViewController: UIViewController {
             topRight: CGPoint(x: croppedImage.size.width, y: 0),
             bottomRight: CGPoint(x: croppedImage.size.width, y: croppedImage.size.height),
             bottomLeft: CGPoint(x: 0, y: croppedImage.size.height))
+        var enhancedScan = ImageScannerScan(image: croppedImage)
+        enhancedScan.rotate(by: self.rotationAngle)
         let results = ImageScannerResults(
             detectedRectangle: croppedImageQuad,
             originalScan: ImageScannerScan(image: image),
             croppedScan: ImageScannerScan(image: croppedImage),
-            enhancedScan: nil
+            enhancedScan: enhancedScan
         )
 
         
-        goBack(results)
+        guard let delegate = self.delegate else { return }
+        delegate.onImageCropped(results)
+        navigationController?.popViewController(animated: true)
     }
     
-    private func goBack(_ results: ImageScannerResults) {
-        guard let navigationController = self.navigationController else {
-            print("Navigation controller is nil")
-            return
-        }
-        
-        var viewControllers = navigationController.viewControllers
-        
-        // Ensure we have at least 2 view controllers to pop
-        guard viewControllers.count >= 2 else {
-            print("Not enough view controllers in the stack")
-            return
-        }
-        
-        // Remove the last two view controllers
-        viewControllers.removeLast(2)
-        
-        // Create and add the new view controller
-        let editorViewController = EditorViewController(results: results)
-        viewControllers.append(editorViewController)
-        
-        // Update the navigation stack
-        navigationController.setViewControllers(viewControllers, animated: true)
+    @objc func gaugeValueChanged(_ sender: LinearGauge) {
+        let angle = sender.currentValue * .pi / 180
+        self.rotationAngle.value = angle * 100
+        imageView.transform = CGAffineTransform(rotationAngle: angle)
     }
 
     private func displayQuad() {
+        NSLog("displayQuad")
         let imageSize = image.size
         let imageFrame = CGRect(
             origin: quadView.frame.origin,
             size: CGSize(width: quadViewWidthConstraint.constant, height: quadViewHeightConstraint.constant)
         )
-
         let scaleTransform = CGAffineTransform.scaleTransform(forSize: imageSize, aspectFillInSize: imageFrame.size)
         let transforms = [scaleTransform]
         let transformedQuad = quad.applyTransforms(transforms)
@@ -243,6 +270,7 @@ final class CropScanViewController: UIViewController {
     /// Since there is no way to know the size of that image before run time, we adjust the constraints
     /// to make sure that the quadView is on top of the displayed image.
     private func adjustQuadViewConstraints() {
+        NSLog("adjustQuadViewConstraints")
         let frame = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
         quadViewWidthConstraint.constant = frame.size.width
         quadViewHeightConstraint.constant = frame.size.height
@@ -260,4 +288,8 @@ final class CropScanViewController: UIViewController {
         return quad
     }
 
+}
+
+protocol CropScanViewControllerDelegate: class {
+    func onImageCropped(_ results: ImageScannerResults)
 }

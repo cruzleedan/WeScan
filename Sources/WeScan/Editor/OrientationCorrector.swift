@@ -155,95 +155,153 @@ class Ocv {
         return Mat(uiImage: image)
     }
     
+    func convertToGrayscale(_ image: Mat) -> Mat {
+        let cgImage = image.toCGImage();
+        
+        let context = CIContext(options: nil)
+        let ciImage = CIImage(cgImage: cgImage)
+        
+        let filter = CIFilter(name: "CIPhotoEffectNoir")!
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(0.0, forKey: kCIInputSaturationKey) // Set saturation to 0 for grayscale
+        
+        let outputImage = filter.outputImage!
+        let cgImg = context.createCGImage(outputImage, from: outputImage.extent)!
+        
+        return Mat(uiImage: UIImage(cgImage: cgImg))
+    }
+    
     func preprocessImage(_ image: Mat) -> Mat {
         NSLog("preprocessImage")
+        // Convert to grayscale
         let grayImage = Mat()
         Imgproc.cvtColor(src: image, dst: grayImage, code: .COLOR_BGR2GRAY)
-        Core.bitwise_not(src: grayImage, dst: grayImage)
-        return grayImage
+        
+        // Apply Gaussian blur to reduce noise and smooth out the image
+        let blurredImage = Mat()
+        Imgproc.GaussianBlur(src: grayImage, dst: blurredImage, ksize: Size(width: 5, height: 5), sigmaX: 0)
+        
+        // Use morphological operations to reduce shadows
+        let morphImage = Mat()
+        let kernel = Imgproc.getStructuringElement(shape: .MORPH_RECT, ksize: Size(width: 5, height: 5))
+        Imgproc.morphologyEx(src: blurredImage, dst: morphImage, op: .MORPH_CLOSE, kernel: kernel)
+        
+        // Normalize the image to improve contrast
+        let normalizedImage = Mat()
+        Core.normalize(src: morphImage, dst: normalizedImage, alpha: 0, beta: 255, norm_type: .NORM_MINMAX)
+        
+        // Apply bilateral filter to reduce noise while preserving edges
+        let bilateralFilteredImage = Mat()
+        Imgproc.bilateralFilter(src: normalizedImage, dst: bilateralFilteredImage, d: 9, sigmaColor: 75, sigmaSpace: 75)
+        
+        // Apply median filter to further reduce noise
+        let medianFilteredImage = Mat()
+        Imgproc.medianBlur(src: bilateralFilteredImage, dst: medianFilteredImage, ksize: 5)
+        
+        // Apply adaptive thresholding
+        let adaptiveThresholdImage = Mat()
+        Imgproc.adaptiveThreshold(
+            src: medianFilteredImage,
+            dst: adaptiveThresholdImage,
+            maxValue: 255,
+            adaptiveMethod: .ADAPTIVE_THRESH_GAUSSIAN_C,
+            thresholdType: .THRESH_BINARY,
+            blockSize: 11,
+            C: 2)
+        
+        // Invert the image if necessary
+        // Core.bitwise_not(src: adaptiveThresholdImage, dst: adaptiveThresholdImage)
+        
+        return adaptiveThresholdImage
     }
     func rotateImage(_ image: Mat, by angle: Double) -> Mat {
-        NSLog("rotateImage to \(angle) degrees")
+        // Define the center of rotation
         let center = Point2f(x: Float(image.cols()) / 2, y: Float(image.rows()) / 2)
+        // Define the rotation matrix
         let rotMatrix = Imgproc.getRotationMatrix2D(center: center, angle: angle, scale: 1.0)
+        // Rotate the source image
         let rotatedImage = Mat()
         Imgproc.warpAffine(src: image, dst: rotatedImage, M: rotMatrix, dsize: Size(width: image.cols(), height: image.rows()))
         return rotatedImage
     }
-    func sumRows(_ image: Mat) -> [Double] {
+    func sumRows(_ roi: Mat) -> [Double] {
         var rowSums: [Double] = []
-        for row in 0..<image.rows() {
-            let rowSum = Core.sum(src: image.row(row)).val[0]
-            rowSums.append(Double(rowSum))
-        }
-        if let maxSum = rowSums.max() {
-            rowSums = rowSums.map { $0 / maxSum * 255 }
+        for i in 0..<roi.rows() {
+            let row = roi.row(i)
+            rowSums.append(Double(Core.sum(src: row).val[0]))
         }
         return rowSums
     }
-    func scoreRotation(_ rowSums: [Double]) -> Double {
-        return Double(rowSums.filter { $0 < 255 }.count)
+    
+    func calculateScore(_ image: Mat, angle: Double) -> Double {
+        let rotatedImage = rotateImage(image, by: angle)
+        
+        // Crop the center 1/3rd of the image
+        let h = rotatedImage.rows()
+        let w = rotatedImage.cols()
+        
+        let aspectRatio = Double(w) / Double(h)
+        let scaleFactor: Double = 2.0 // Adjust this factor to change the ROI size
+        
+        let buffer = Int32(Double(min(h, w)) - (Double(min(h, w)) / scaleFactor))
+        let newWidth = Int32(Double(buffer) * aspectRatio)
+        let newHeight = buffer
+        
+        let roiRect = Rect(x: (w - newWidth)/2, y: (h - newHeight)/2, width: newWidth, height: newHeight)
+        let roi = Mat(mat: rotatedImage, rect: roiRect)
+        
+        // Create background to draw transform on
+        var bg = Mat.zeros(newHeight, cols: newWidth, type: CvType.CV_8U)
+        
+        // Threshold image
+        var thresholdedRoi = Mat()
+        Imgproc.threshold(src: roi, dst: thresholdedRoi, thresh: 140, maxval: 255, type: .THRESH_BINARY)
+        
+        // Compute the sums of the rows
+        let rowSums = sumRows(thresholdedRoi)
+        
+        // High score --> Zebra stripes
+        let score = Double(rowSums.filter { $0 > 0 }.count)
+        
+        return score
     }
     
     func findBestRotation(for image: Mat) -> Double {
+        let initialScore = Double.greatestFiniteMagnitude
         var bestScore = Double.greatestFiniteMagnitude
         var bestAngle = 0.0
         
-        for angle in stride(from: -45.0, through: 45.0, by: 0.5) {
-            let rotatedImage = rotateImage(image, by: angle)
-            let rowSums = sumRows(rotatedImage)
-            let score = scoreRotation(rowSums)
+        for angle in stride(from: 0, through: 45, by: 0.5) {
+            let score = calculateScore(image, angle: angle)
+            print("+score \(angle) : \(score)")
+            if score < bestScore {
+                bestScore = score
+                bestAngle = angle
+            }
+            if score > bestScore && bestScore < initialScore {
+                break
+            }
+        }
+        
+        for angle in stride(from: 0, through: -45, by: -0.5) {
+            let score = calculateScore(image, angle: angle)
+            print("-score \(angle) : \(score)")
             if score < bestScore {
                 bestScore = score
                 bestAngle = angle
             }
         }
         NSLog("findBestRotation \(bestAngle) degrees")
+        NSLog("Best Score: \(bestScore)")
         return bestAngle
     }
     func deskewImage(_ image: Mat) -> Mat {
         NSLog("deskewImage")
         let preprocessedImage = preprocessImage(image)
         let bestAngle = findBestRotation(for: preprocessedImage)
-        return rotateImage(image, by: bestAngle)
+        NSLog("Row Count: \(preprocessedImage.rows())")
+        return rotateImage(preprocessedImage, by: bestAngle)
     }
 }
 
 
-extension UIImage {
-    convenience init?(mat: Mat) {
-        // Ensure the Mat is valid
-        guard !mat.empty() else {
-            return nil
-        }
-        
-        // Convert the Mat to CGImage
-        let ns = NSData(bytes: mat.dataPointer(), length: Int(mat.total()) * mat.elemSize())
-        let cfdata = ns as CFData
-        let width = Int(mat.cols())
-        let height = Int(mat.rows())
-        let bitsPerComponent = 8
-        let bytesPerRow = mat.step1()
-        let colorSpace = CGColorSpaceCreateDeviceGray()
-        
-        guard let providerRef = CGDataProvider(data: cfdata) else {
-            return nil
-        }
-        
-        guard let cgImage = CGImage(width: width,
-                                    height: height,
-                                    bitsPerComponent: bitsPerComponent,
-                                    bitsPerPixel: bitsPerComponent,
-                                    bytesPerRow: bytesPerRow,
-                                    space: colorSpace,
-                                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-                                    provider: providerRef,
-                                    decode: nil,
-                                    shouldInterpolate: true,
-                                    intent: .defaultIntent) else {
-            return nil
-        }
-        
-        self.init(cgImage: cgImage)
-    }
-}

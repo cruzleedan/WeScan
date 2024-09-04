@@ -8,6 +8,7 @@
 
 import UIKit
 import WeScan
+import ReceiptOcr
 
 final class HomeViewController: UIViewController {
 
@@ -122,10 +123,15 @@ final class HomeViewController: UIViewController {
         let selectAction = UIAlertAction(title: "Select", style: .default) { _ in
             self.selectImage()
         }
+        
+        let scanReceiptAction = UIAlertAction(title: "Scan Receipt", style: .default) { _ in
+            self.scanReceipt()
+        }
 
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
 
         actionSheet.addAction(scanAction)
+        actionSheet.addAction(scanReceiptAction)
         actionSheet.addAction(selectAction)
         actionSheet.addAction(cancelAction)
         actionSheet.addAction(newAction)
@@ -152,6 +158,12 @@ final class HomeViewController: UIViewController {
         imagePicker.sourceType = .photoLibrary
         present(imagePicker, animated: true)
     }
+    
+    func scanReceipt() {
+        NSLog("scanReceipt")
+        let receiptScannerViewController = ReceiptScannerViewController(delegate: self)
+        present(receiptScannerViewController, animated: true)
+    }
 
 }
 
@@ -168,6 +180,12 @@ extension HomeViewController: ImageScannerControllerDelegate {
         scanner.dismiss(animated: true, completion: nil)
     }
 
+}
+
+extension HomeViewController: ReceiptScannerViewControllerDelegate {
+    func receiptScannerDidCancel() {
+        self.dismiss(animated: true)
+    }
 }
 
 extension HomeViewController: UIImagePickerControllerDelegate, UINavigationControllerDelegate {

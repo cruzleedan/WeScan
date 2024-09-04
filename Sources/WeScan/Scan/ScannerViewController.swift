@@ -486,23 +486,7 @@ extension ScannerViewController: UIImagePickerControllerDelegate, UINavigationCo
         
         guard let image = info[.originalImage] as? UIImage else { return }
         
-        guard let image = rotateImage(image: image) as? UIImage else { return }
-        
         let editViewController = EditorViewController(image: image, rotateImage: false)
         navigationController?.pushViewController(editViewController, animated: true)
     }
-    
-    private func rotateImage(image: UIImage) -> UIImage? {
-        if image.imageOrientation == UIImage.Orientation.up {
-            NSLog("image is already upright")
-            return image /// already upright, no need for changes
-        }
-        NSLog("image will be rotated")
-        UIGraphicsBeginImageContext(image.size)
-        image.draw(in: CGRect(origin: CGPoint.zero, size: image.size))
-        let copy = UIGraphicsGetImageFromCurrentImageContext()
-        UIGraphicsEndImageContext()
-        return copy
-    }
-
 }

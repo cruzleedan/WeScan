@@ -9,7 +9,7 @@ import UIKit
 
 /// The `EditorViewController` offers an interface to review the image after it
 /// has been cropped and deskewed according to the passed in quadrilateral.
-final class EditorViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+final class EditorViewController: UIViewController {
     static var pages: [ImageScannerResults] = []
     static var selectedIndex: Int = 0
     
@@ -40,33 +40,37 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
         layout.scrollDirection = .horizontal
         layout.minimumInteritemSpacing = 0
         layout.minimumLineSpacing = 0
-        layout.itemSize = view.bounds.size
+//        layout.itemSize = view.bounds.size
         
-        previewCollectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
-        previewCollectionView.isPagingEnabled = true
-        previewCollectionView.showsHorizontalScrollIndicator = false
-        previewCollectionView.translatesAutoresizingMaskIntoConstraints = false
-        previewCollectionView.backgroundColor = .clear
-        previewCollectionView.dataSource = self
-        previewCollectionView.delegate = self
+        let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView.isPagingEnabled = true
+        collectionView.showsHorizontalScrollIndicator = false
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        collectionView.backgroundColor = .clear
         
-        previewCollectionView.register(ImagePreviewCell.self, forCellWithReuseIdentifier: "ImagePreviewCell")
-        return previewCollectionView
+        collectionView.dataSource = self
+        collectionView.delegate = self
+        collectionView.register(ImagePreviewCell.self, forCellWithReuseIdentifier: "ImagePreviewCell")
+        NSLog("ImagePreviewCell registered")
+        
+        return collectionView
     }()
     
     lazy var thumbnailCollectionView: UICollectionView = {
         let layout = UICollectionViewFlowLayout()
         layout.scrollDirection = .horizontal
         
-        thumbnailCollectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
-        thumbnailCollectionView.translatesAutoresizingMaskIntoConstraints = false
-        thumbnailCollectionView.backgroundColor = UIColor.black.withAlphaComponent(0.5) // Semi-transparent overlay
-        thumbnailCollectionView.dataSource = self
-        thumbnailCollectionView.delegate = self
+        let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        collectionView.backgroundColor = UIColor.black.withAlphaComponent(0.5) // Semi-transparent overlay
         
-        thumbnailCollectionView.register(ThumbnailCell.self, forCellWithReuseIdentifier: "ThumbnailCell")
-        thumbnailCollectionView.isHidden = true
-        return thumbnailCollectionView
+        collectionView.dataSource = self
+        collectionView.delegate = self
+        collectionView.register(ThumbnailCell.self, forCellWithReuseIdentifier: "ThumbnailCell")
+        NSLog("ThumbnailCell registered")
+        
+//        collectionView.isHidden = true
+        return collectionView
     }()
     
     private lazy var cancelButton: UIBarButtonItem = {
@@ -154,18 +158,11 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
     init(image: UIImage, quad: Quadrilateral? = nil, rotateImage: Bool = false) {
         super.init(nibName: nil, bundle: nil)
         var img = image
-        if rotateImage {
-            rotationAngle.value = 180
-            img = image.rotated(by: rotationAngle)!
-        }
+//        if rotateImage {
+//            rotationAngle.value = 180
+//            img = image.rotated(by: rotationAngle)!
+//        }
         self.addPageImage(image: img, quad: quad)
-    }
-    
-    init(results: ImageScannerResults) {
-        self.results = results
-        
-        EditorViewController.pages[EditorViewController.selectedIndex] = self.results
-        super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder aDecoder: NSCoder) {
@@ -246,6 +243,7 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
             img = UIImage.from(ciImage: filteredImage)
         }
         self.results.croppedScan = ImageScannerScan(image: img)
+        self.results.enhancedScan = ImageScannerScan(image: img)
         self.results.detectedRectangle = Quadrilateral(
             topLeft: CGPoint(x: 0, y: 0),
             topRight: CGPoint(x: img.size.width, y: 0),
@@ -272,7 +270,7 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
             previewCollectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             previewCollectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             previewCollectionView.topAnchor.constraint(equalTo: view.topAnchor),
-            previewCollectionView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -100) // Adjust height as needed
+            previewCollectionView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -150) // Adjust height as needed
         ])
     }
     
@@ -422,7 +420,10 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
     
     @objc private func cropImage() {
         NSLog("cropImage")
-        let cropVC = CropScanViewController(image: results.croppedScan.image.rotated(by: rotationAngle)!, quad: results.detectedRectangle)
+        let page = EditorViewController.pages[EditorViewController.selectedIndex]
+        let image = page.enhancedScan?.image ?? page.croppedScan.image
+        let cropVC = CropScanViewController(image: image.rotated(by: rotationAngle)!, quad: page.detectedRectangle)
+        cropVC.delegate = self
         navigationController?.pushViewController(cropVC, animated: false)
     }
     
@@ -471,6 +472,7 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
         NSLog("moreMenu")
         // Show the bottom sheet when the button is tapped
         let bottomSheetVC = BottomSheetViewController()
+        bottomSheetVC.delegate = self
         bottomSheetVC.modalPresentationStyle = .pageSheet
         bottomSheetVC.preferredContentSize = CGSize(width: view.frame.width, height: 100) // Set preferred content size
         
@@ -481,17 +483,40 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
         present(bottomSheetVC, animated: true, completion: nil)
     }
     
+}
+
+extension EditorViewController: BottomSheetViewControllerDelegate {
+    var image: UIImage? {
+        self.results.croppedScan.image
+    }
     
-    // MARK: UICollectionViewDataSource methods
-    
+    func onImageDeskewed(image: UIImage?) {
+        NSLog("onImageDeskewed")
+        guard let image = image, var enhancedScan = self.results.enhancedScan else { return }
+        
+        enhancedScan.image = image
+        self.results.enhancedScan = enhancedScan
+        NSLog("updated enhanced image")
+        
+        guard var previewScan = EditorViewController.pages[EditorViewController.selectedIndex].enhancedScan else { return }
+        previewScan.image = image
+        EditorViewController.pages[EditorViewController.selectedIndex].enhancedScan = previewScan
+        NSLog("updated page enhanced image")
+        
+        self.previewCollectionView.reloadData()
+        self.previewCollectionView.layoutIfNeeded()
+    }
+}
+
+extension EditorViewController: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
         return EditorViewController.pages.count
     }
     
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        if collectionView == self.previewCollectionView {
+        if collectionView == previewCollectionView {
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ImagePreviewCell", for: indexPath) as! ImagePreviewCell
-            cell.imageView.image = EditorViewController.pages[indexPath.item].croppedScan.image
+            cell.imageView.image = EditorViewController.pages[indexPath.item].enhancedScan?.image ?? UIImage(systemName: "text.rectangle.page")
             return cell
         } else {
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ThumbnailCell", for: indexPath) as! ThumbnailCell
@@ -512,12 +537,12 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
     // Handle cell selection
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         NSLog("Tapped image at index: \(indexPath.item)")
-        if collectionView == self.thumbnailCollectionView {
-            EditorViewController.selectedIndex = indexPath.item
-            self.previewCollectionView.reloadData()
-            self.previewCollectionView.layoutIfNeeded()
-            self.previewCollectionView.scrollToItem(at: indexPath, at: .centeredHorizontally, animated: true)
-        }
+//        if collectionView == self.thumbnailCollectionView {
+//            EditorViewController.selectedIndex = indexPath.item
+//            self.previewCollectionView.reloadData()
+//            self.previewCollectionView.layoutIfNeeded()
+//            self.previewCollectionView.scrollToItem(at: indexPath, at: .centeredHorizontally, animated: true)
+//        }
     }
     
     // Detect scroll end to update the selected index
@@ -538,146 +563,19 @@ final class EditorViewController: UIViewController, UICollectionViewDataSource, 
     func updateSelectedImageIndex(to indexPath: IndexPath) {
         NSLog("updateSelectedImageIndex")
         EditorViewController.selectedIndex = indexPath.item
-        thumbnailCollectionView.selectItem(at: indexPath, animated: true, scrollPosition: .centeredHorizontally)
+//        thumbnailCollectionView.selectItem(at: indexPath, animated: true, scrollPosition: .centeredHorizontally)
     }
 }
 
-class ImagePreviewCell: UICollectionViewCell {
-    let imageView: UIImageView = {
-        let iv = UIImageView()
-        iv.contentMode = .scaleAspectFit
-        iv.clipsToBounds = true
-        iv.layer.masksToBounds = true
-        iv.translatesAutoresizingMaskIntoConstraints = false
-       
-        return iv
-    }()
-    
-  
-    
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+extension EditorViewController: CropScanViewControllerDelegate {
+    func onImageCropped(_ results: ImageScannerResults) {
+        self.results = results
+        EditorViewController.pages[EditorViewController.selectedIndex] = self.results
         
-        contentView.addSubview(imageView)
+//        self.thumbnailCollectionView.reloadData()
+//        self.thumbnailCollectionView.layoutIfNeeded()
         
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            imageView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            imageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-        ])
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-
-class ThumbnailCell: UICollectionViewCell {
-    let imageView: UIImageView = {
-        let iv = UIImageView()
-        iv.contentMode = .scaleAspectFill
-        iv.clipsToBounds = true
-        iv.layer.cornerRadius = 10 // Rounded corners
-        iv.layer.masksToBounds = true
-        iv.translatesAutoresizingMaskIntoConstraints = false
-        
-        iv.layer.shadowColor = UIColor.black.cgColor
-        iv.layer.shadowOffset = CGSize(width: 0, height: 2)
-        iv.layer.shadowOpacity = 0.5
-        iv.layer.shadowRadius = 4
-        iv.layer.borderWidth = 1
-        iv.layer.borderColor = UIColor.gray.cgColor
-
-        return iv
-    }()
-    
-    let overlayView: UIView = {
-        let view = UIView()
-        view.layer.borderColor = UIColor.red.cgColor
-        view.layer.borderWidth = 2
-        view.layer.cornerRadius = 10
-        view.layer.masksToBounds = true
-        view.isHidden = true // Hidden by default
-        view.translatesAutoresizingMaskIntoConstraints = false
-        return view
-    }()
-    
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        
-        contentView.addSubview(imageView)
-        contentView.addSubview(overlayView)
-        
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            imageView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            imageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            
-            overlayView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            overlayView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            overlayView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            overlayView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-        ])
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override var isSelected: Bool {
-        didSet {
-            overlayView.isHidden = !isSelected // Show overlay if selected
-        }
-    }
-}
-
-class BottomSheetViewController: UIViewController {
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        
-        // Configure the bottom sheet view
-        view.backgroundColor = .white
-        
-        // Create a horizontally scrollable view
-        let scrollView = UIScrollView()
-        scrollView.showsHorizontalScrollIndicator = false
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(scrollView)
-        
-        // Create a stack view to hold the content
-        let stackView = UIStackView()
-        stackView.axis = .horizontal
-        stackView.spacing = 10
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(stackView)
-        
-        // Add some sample views to the stack view
-        for i in 1...10 {
-            let label = UILabel()
-            label.text = "Item \(i)"
-            label.textAlignment = .center
-            label.backgroundColor = .lightGray
-            label.widthAnchor.constraint(equalToConstant: 100).isActive = true
-            label.heightAnchor.constraint(equalToConstant: 100).isActive = true
-            stackView.addArrangedSubview(label)
-        }
-        
-        // Set up constraints
-        NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            
-            stackView.topAnchor.constraint(equalTo: scrollView.topAnchor),
-            stackView.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
-            stackView.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            stackView.heightAnchor.constraint(equalTo: scrollView.heightAnchor)
-        ])
+        self.previewCollectionView.reloadData()
+        self.previewCollectionView.layoutIfNeeded()
     }
 }
